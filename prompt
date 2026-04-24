@@ -1,0 +1,463 @@
+You are an expert Python backend developer. I need you to build a complete 
+production-ready backend for an AI-powered RFP Discovery system.
+
+=============================================================
+PROJECT OVERVIEW
+=============================================================
+Build a fully functional FastAPI backend for an automated RFP 
+(Request for Proposal) Discovery system that:
+- Crawls procurement portals for RFP opportunities
+- Filters them through a rule engine
+- Extracts structured intelligence using LLMs
+- Routes output through a Human-in-the-Loop (HIL) validation gate
+- Hands off confirmed outputs to downstream modules
+
+=============================================================
+TECH STACK
+=============================================================
+- Framework: FastAPI (async)
+- Task Queue: Celery + Redis
+- Database: PostgreSQL with SQLAlchemy ORM
+- LLM Orchestration: LangChain + Anthropic Claude API
+- Document Parsing: PyMuPDF, python-docx, BeautifulSoup4
+- Web Crawling: Scrapy + Playwright
+- Auth: OAuth2 + JWT (role-based)
+- Notifications: MS Teams Webhook
+- Schema Validation: Pydantic v2
+- Migrations: Alembic
+- Testing: Pytest
+
+=============================================================
+ROLES TO IMPLEMENT (RBAC)
+=============================================================
+1. Manager — confirm/edit/reject HIL outputs, view audit log
+2. Bid Director — co-review high-value RFPs, approve config changes
+3. Business Development Lead — recommend sources, view reports
+4. Compliance Reviewer — validate certifications and regulatory flags
+5. AI Platform Lead — full configuration access
+6. Leadership — read-only summary access
+
+=============================================================
+DATABASE MODELS (PostgreSQL + SQLAlchemy)
+=============================================================
+Build the following models with full relationships:
+
+1. User — id, name, email, role, hashed_password, is_active, created_at
+2. SourceURL — id, url, crawl_frequency, is_active, last_crawled_at, 
+   created_by, created_at
+3. CrawlRun — id, source_url_id, started_at, ended_at, status, 
+   listings_detected, listings_passed, listings_discarded, error_log
+4. RFPListing — id, crawl_run_id, title, description, url, metadata, 
+   status, detected_at, rfp_id (unique)
+5. FilterRule — id, rule_type (keyword/industry/geography/
+   contract_value/deadline/eligibility), value, is_mandatory, 
+   is_active, version, created_by
+6. FilterDecision — id, rfp_listing_id, filter_rule_id, result 
+   (pass/fail), evaluated_at
+7. RFPDocument — id, rfp_listing_id, file_path, format 
+   (pdf/word/html/text), parsed_content, parsing_status, created_at
+8. Task — id, rfp_id, task_name, description, priority, 
+   estimated_effort, section_reference, created_at
+9. Skill — id, task_id, rfp_id, skill_name, experience_level, 
+   category (mandatory/preferred), section_reference
+10. Certification — id, task_id, rfp_id, cert_name, 
+    category (mandatory/preferred), section_reference, 
+    page_reference, taxonomy_status (recognised/unrecognised)
+11. EligibilityAssessment — id, rfp_id, status 
+    (eligible/conditionally_eligible/not_eligible), 
+    supporting_evidence, capability_gaps, mitigation_actions
+12. RiskRegister — id, rfp_id, risk_description, severity 
+    (low/medium/high), category, mitigation
+13. StructuredOutput — id, rfp_id, output_json, schema_version, 
+    confidence_scores, status (pending/confirmed/rejected), 
+    created_at, confirmed_at, confirmed_by
+14. HILCorrection — id, structured_output_id, rfp_id, field_name, 
+    original_value, corrected_value, reviewer_id, timestamp
+15. AuditLog — id, rfp_id, action_type, input_reference, 
+    output_produced, confidence_score, performed_by, timestamp
+16. PromptTemplate — id, name, content, version, is_active, 
+    approved_by, created_at
+
+=============================================================
+API ENDPOINTS TO BUILD
+=============================================================
+
+--- AUTH ---
+POST   /api/auth/register
+POST   /api/auth/login
+POST   /api/auth/refresh
+GET    /api/auth/me
+
+--- SOURCE URL MANAGEMENT ---
+GET    /api/sources/
+POST   /api/sources/
+PUT    /api/sources/{id}
+DELETE /api/sources/{id}
+POST   /api/sources/{id}/trigger-crawl
+
+--- CRAWL MANAGEMENT ---
+GET    /api/crawls/
+GET    /api/crawls/{id}
+GET    /api/crawls/{id}/listings
+GET    /api/crawls/logs
+
+--- RULE ENGINE ---
+GET    /api/rules/
+POST   /api/rules/
+PUT    /api/rules/{id}
+DELETE /api/rules/{id}
+POST   /api/rules/test         (test rules against a sample listing)
+
+--- RFP PIPELINE ---
+GET    /api/rfp/
+GET    /api/rfp/{rfp_id}
+POST   /api/rfp/{rfp_id}/process    (trigger full pipeline)
+GET    /api/rfp/{rfp_id}/tasks
+GET    /api/rfp/{rfp_id}/skills
+GET    /api/rfp/{rfp_id}/certifications
+GET    /api/rfp/{rfp_id}/eligibility
+GET    /api/rfp/{rfp_id}/risks
+GET    /api/rfp/{rfp_id}/output
+
+--- HIL REVIEW ---
+GET    /api/hil/queue
+GET    /api/hil/{rfp_id}
+POST   /api/hil/{rfp_id}/confirm
+POST   /api/hil/{rfp_id}/correct
+POST   /api/hil/{rfp_id}/reject
+GET    /api/hil/{rfp_id}/corrections
+
+--- AUDIT LOG ---
+GET    /api/audit/
+GET    /api/audit/{rfp_id}
+
+--- REPORTS ---
+GET    /api/reports/crawl-activity
+GET    /api/reports/rule-engine-performance
+GET    /api/reports/extraction-accuracy
+GET    /api/reports/hil-corrections
+GET    /api/reports/eligibility-summary
+GET    /api/reports/skill-certification-demand
+
+--- PROMPT TEMPLATES ---
+GET    /api/prompts/
+POST   /api/prompts/
+PUT    /api/prompts/{id}/approve
+
+--- NOTIFICATIONS ---
+POST   /api/notify/teams       (send MS Teams webhook)
+
+=============================================================
+BUSINESS RULES TO IMPLEMENT
+=============================================================
+
+BR-001: Web Crawl Scheduling
+- Schedule crawls per source URL independently
+- Compare current crawl vs previous snapshot
+- Only forward new/updated listings downstream
+- Log failures, flag timed-out sources
+- Config-only source management (no runtime modification)
+
+BR-002: Rule Engine Filtering
+- Apply filters in sequence: keyword → industry → geography 
+  → contract value → deadline → eligibility pre-conditions
+- ALL mandatory filters must pass for a listing to proceed
+- Log the exact filter that caused each rejection
+- Use only approved/versioned filter rules
+
+BR-003: Document Acquisition & Ingestion
+- Download attached documents per passing RFP listing
+- Support PDF, Word, HTML, plain text
+- If no attachment, process from listing page directly
+- Preserve structure: headings, tables, numbered lists, appendices
+- Flag corrupted/unreadable sections → route to HIL
+- Link document to unique RFP identifier
+
+BR-004: Task Decomposition & Skill Mapping
+- LLM analyzes scope of work → decomposes into tasks
+- Each task gets priority level + RFP section reference
+- Identify required skills, experience levels, domain expertise
+- Classify skills as mandatory or preferred
+- Output structured JSON → submit for Manager review
+
+BR-005: Certification Identification
+- Extract all certification requirements from RFP
+- Classify as mandatory or preferred
+- Link to task + RFP section + page reference
+- Validate against certification taxonomy
+- Flag unrecognised certifications for HIL
+
+BR-006: Risk & Eligibility Analysis
+- Compare RFP requirements vs capability register + past performance
+- Assign eligibility status: Eligible / Conditionally Eligible / 
+  Not Eligible
+- For Conditionally Eligible: identify gaps + mitigation actions
+- Identify delivery risks with initial severity ratings
+- Submit outputs for Manager review before go/no-go decision
+
+BR-007: Structured Output Packaging
+- Aggregate all outputs into single versioned JSON object
+- Include: crawl source, filter record, tasks, skills, 
+  certifications, eligibility, risks, confidence scores
+- Block downstream handoff until HIL confirmation recorded
+
+BR-008: HIL Review & Correction Logging
+- Route output to HIL queue after generation
+- Require Manager action: confirm / correct / reject
+- Block all downstream processing without confirmation
+- Log every correction: rfp_id, field_name, original_value, 
+  corrected_value, reviewer_id, timestamp
+- Queue correction data for prompt/rule improvement cycles
+
+=============================================================
+OUTPUT JSON SCHEMA (BR-009)
+=============================================================
+Every structured output must conform to this schema:
+
+{
+  "rfp_id": "string",
+  "source": "string",
+  "tasks": [
+    {
+      "task_name": "string",
+      "description": "string",
+      "priority": "high|medium|low",
+      "estimated_effort": "string",
+      "section_reference": "string",
+      "skills": [
+        {
+          "skill_name": "string",
+          "experience_level": "string",
+          "category": "mandatory|preferred",
+          "section_reference": "string"
+        }
+      ],
+      "certifications": [
+        {
+          "cert_name": "string",
+          "category": "mandatory|preferred",
+          "section_reference": "string",
+          "page_reference": "string",
+          "taxonomy_status": "recognised|unrecognised"
+        }
+      ]
+    }
+  ],
+  "eligibility": {
+    "status": "eligible|conditionally_eligible|not_eligible",
+    "supporting_evidence": "string",
+    "capability_gaps": [],
+    "mitigation_actions": []
+  },
+  "risk": [
+    {
+      "risk_description": "string",
+      "severity": "low|medium|high",
+      "category": "string",
+      "mitigation": "string"
+    }
+  ],
+  "confidence_scores": {
+    "tasks": 0.0,
+    "skills": 0.0,
+    "certifications": 0.0,
+    "eligibility": 0.0,
+    "risk": 0.0
+  },
+  "status": "pending|confirmed|rejected"
+}
+
+=============================================================
+CONFIDENCE SCORING RULES
+=============================================================
+- Every extracted field MUST carry a confidence score (0.0 to 1.0)
+- Threshold: 0.7
+- Score < 0.7 → flag for HIL review, withhold from confirmed output
+- Score >= 0.7 → auto-approved
+- Risk bands: 0.0-0.5 (low), 0.5-0.7 (medium), 0.7-1.0 (high)
+
+=============================================================
+LLM PIPELINE LOGIC
+=============================================================
+Build a LangChain pipeline with the following stages:
+
+Stage 1 — Document Chunking
+- Split large RFP documents into chunks respecting section boundaries
+- Maintain section metadata per chunk
+
+Stage 2 — Task Decomposition Chain
+- System prompt: Extract all tasks and deliverables from RFP scope
+- Output: structured JSON with task name, description, priority, 
+  effort, section reference
+- Include confidence score per task
+
+Stage 3 — Skill & Certification Extraction Chain
+- System prompt: Identify all skill and certification requirements
+- Classify as mandatory or preferred
+- Tag with source section and page reference
+- Validate certifications against taxonomy list
+- Include confidence score per field
+
+Stage 4 — Eligibility Assessment Chain
+- System prompt: Compare RFP requirements against capability profile
+- Output eligibility status with supporting evidence
+- Identify gaps and suggest mitigations
+- Include confidence score
+
+Stage 5 — Risk Assessment Chain
+- System prompt: Identify key delivery risks from RFP
+- Assign severity ratings
+- Include confidence score per risk
+
+All prompts must be:
+- Version-controlled via PromptTemplate model
+- Only approved versions used in production
+- Plain-English rationale included in every output
+
+=============================================================
+CELERY PIPELINE TASKS
+=============================================================
+Build the following Celery tasks chained in sequence:
+
+1. task_crawl_source(source_url_id)
+2. task_apply_rule_engine(rfp_listing_id)
+3. task_download_document(rfp_listing_id)
+4. task_parse_document(rfp_document_id)
+5. task_decompose_tasks(rfp_id)
+6. task_extract_skills_certifications(rfp_id)
+7. task_assess_eligibility(rfp_id)
+8. task_assess_risks(rfp_id)
+9. task_package_output(rfp_id)
+10. task_notify_hil_reviewer(rfp_id)
+
+Each task must:
+- Write to AuditLog on start and completion
+- Handle failures gracefully with retry logic
+- Never proceed to next stage without previous stage success
+- Block at task_notify_hil_reviewer until HIL confirmation recorded
+
+=============================================================
+NON-FUNCTIONAL REQUIREMENTS
+=============================================================
+- Processing time per RFP: < 30 seconds under normal conditions
+- Concurrent RFP processing: minimum 50 in parallel
+- Crawl success rate: >= 80% with max 3 retries, 30s timeout
+- Scalability: up to 1000 RFPs/day
+- Uptime: 99.5% target
+- Encryption: TLS 1.2+ in transit, encrypted at rest
+- Audit log retention: 7 years
+- All timestamps in UTC
+- All outputs in English regardless of source language
+
+=============================================================
+FOLDER STRUCTURE TO GENERATE
+=============================================================
+Generate the following folder structure with all files:
+
+rfp_discovery_backend/
+├── app/
+│   ├── main.py
+│   ├── config.py
+│   ├── database.py
+│   ├── dependencies.py
+│   ├── models/
+│   │   ├── __init__.py
+│   │   ├── user.py
+│   │   ├── source.py
+│   │   ├── crawl.py
+│   │   ├── rfp.py
+│   │   ├── filter.py
+│   │   ├── document.py
+│   │   ├── extraction.py
+│   │   ├── output.py
+│   │   ├── audit.py
+│   │   └── prompt.py
+│   ├── schemas/
+│   │   ├── __init__.py
+│   │   ├── auth.py
+│   │   ├── source.py
+│   │   ├── crawl.py
+│   │   ├── rfp.py
+│   │   ├── filter.py
+│   │   ├── extraction.py
+│   │   ├── output.py
+│   │   ├── hil.py
+│   │   └── reports.py
+│   ├── routers/
+│   │   ├── __init__.py
+│   │   ├── auth.py
+│   │   ├── sources.py
+│   │   ├── crawls.py
+│   │   ├── rules.py
+│   │   ├── rfp.py
+│   │   ├── hil.py
+│   │   ├── audit.py
+│   │   ├── reports.py
+│   │   ├── prompts.py
+│   │   └── notifications.py
+│   ├── services/
+│   │   ├── __init__.py
+│   │   ├── auth_service.py
+│   │   ├── crawl_service.py
+│   │   ├── rule_engine.py
+│   │   ├── document_parser.py
+│   │   ├── llm_pipeline.py
+│   │   ├── eligibility_service.py
+│   │   ├── risk_service.py
+│   │   ├── output_packager.py
+│   │   ├── hil_service.py
+│   │   ├── audit_service.py
+│   │   └── notification_service.py
+│   ├── tasks/
+│   │   ├── __init__.py
+│   │   ├── celery_app.py
+│   │   ├── crawl_tasks.py
+│   │   ├── pipeline_tasks.py
+│   │   └── notification_tasks.py
+│   └── utils/
+│       ├── __init__.py
+│       ├── confidence.py
+│       ├── schema_validator.py
+│       ├── encryption.py
+│       └── timestamp.py
+├── alembic/
+│   └── versions/
+├── tests/
+│   ├── test_auth.py
+│   ├── test_rule_engine.py
+│   ├── test_pipeline.py
+│   ├── test_hil.py
+│   └── test_audit.py
+├── .env.example
+├── requirements.txt
+├── docker-compose.yml
+├── Dockerfile
+├── alembic.ini
+└── README.md
+
+=============================================================
+ADDITIONAL INSTRUCTIONS
+=============================================================
+1. Generate ALL files completely — no placeholders, no TODOs
+2. Every endpoint must have proper error handling and HTTP 
+   status codes
+3. Every database write must also write to AuditLog
+4. RBAC must be enforced on every endpoint via FastAPI 
+   dependency injection
+5. Confidence scores must be present on every LLM output field
+6. HIL gate must be technically enforced — downstream tasks 
+   must be blocked without recorded confirmation
+7. All Pydantic schemas must strictly match the BR-009 
+   JSON output schema
+8. Docker and docker-compose must be production-ready with 
+   PostgreSQL, Redis, and the FastAPI app as separate services
+9. Include a README with setup instructions, environment 
+   variables, and how to run the pipeline
+10. All LLM prompts must be stored in the PromptTemplate 
+    model and fetched at runtime — never hardcoded
+
+Start by generating the folder structure, then build each 
+file completely one by one. Begin with:
+config.py → database.py → all models → all schemas → 
+all services → all routers → celery tasks → tests → 
+docker files → README
